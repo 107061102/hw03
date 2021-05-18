@@ -100,7 +100,9 @@ void publish_message(MQTT::Client<MQTTNetwork, Countdown>* client) {
     } else {
       message_num++;
     }
-    
+    if (mode == 0) {
+      true_angle = angle;
+    }
     MQTT::Message message;
     char buff[100];
     sprintf(buff, "%d %d %f", mode, message_num, true_angle);
