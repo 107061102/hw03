@@ -25,42 +25,44 @@ using namespace std::chrono;
 // Create an area of memory to use for input, output, and intermediate arrays.
 // The size of this will depend on the model you're using, and may need to be
 // determined by experimentation.
-
-RpcDigitalOut myled1(LED2,"myled1");
-RpcDigitalOut myled2(LED2,"myled2");
-RpcDigitalOut myled3(LED3,"myled3");
+DigitalOut myled1(LED1);
+DigitalOut myled2(LED2);
+DigitalOut myled3(LED3);
+InterruptIn mypin(USER_BUTTON);
 BufferedSerial pc(USBTX, USBRX);
 uLCD_4DGL uLCD(D1, D0, D2);
+
 void GestureUI(Arguments *in, Reply *out);
 RPCFunction rpcLED(&GestureUI, "GestureUI");
 void Tilt(Arguments *in, Reply *out);
 RPCFunction jud(&Tilt, "TILT");
-int Gestureselect();
-void Tiltjudge();
 void flip(Arguments *in, Reply *out);
 RPCFunction change(&flip, "FLIP");
-double x, y;
+int Gestureselect();
+void Tiltjudge();
+
+
 constexpr int kTensorArenaSize = 60 * 1024;
 uint8_t tensor_arena[kTensorArenaSize];
 
 EventQueue queue(32 * EVENTS_EVENT_SIZE);
 EventQueue queue2(32 * EVENTS_EVENT_SIZE);
 EventQueue time_queue(32 * EVENTS_EVENT_SIZE);
-InterruptIn mypin(USER_BUTTON);
-Ticker flipper;
+EventQueue mqtt_queue(32 * EVENTS_EVENT_SIZE);
+
 Thread t;
 Thread t2;
-Thread t3(osPriorityLow);
-WiFiInterface *wifi;
-int angle = 30;
-double true_angle=0;
-int mode = 0;
+Thread t3;
+Thread mqtt_thread(osPriorityHigh);
 
+WiFiInterface *wifi;
+double x, y;
+int angle = 30;
+double true_angle = 0;
+int mode = 0;
 MQTT::Client<MQTTNetwork, Countdown> *client2;
 int16_t value[3];
-
 char buf[256], outbuf[256];
-
 double thres, val;
 
 FILE *devin = fdopen(&pc, "r");
@@ -72,8 +74,8 @@ volatile bool closed = false;
 
 const char* topic = "Mbed";
 
-Thread mqtt_thread(osPriorityHigh);
-EventQueue mqtt_queue(32 * EVENTS_EVENT_SIZE);
+
+
 
 void flip(Arguments *in, Reply *out) {
   mode = !mode;
@@ -110,8 +112,6 @@ void publish_message(MQTT::Client<MQTTNetwork, Countdown>* client) {
     message.payloadlen = strlen(buff) + 1;
     int rc = client->publish(topic, message);
 
-    /*printf("rc:  %d\r\n", rc);
-    printf("Puslish message: %s\r\n", buff);*/
 }
 
 void close_mqtt() {
@@ -174,19 +174,12 @@ int main() {
     mqtt_thread.start(callback(&mqtt_queue, &EventQueue::dispatch_forever));
     mypin.rise(mqtt_queue.event(&publish_message, &client));
     int num = 0;
-    /*while(1){
-      BSP_ACCELERO_AccGetXYZ(value);
-      printf("%d, %d, %d\n", value[0], value[1], value[2]);
-      printf("%d, %g\n", value[2],cos(PI/180*angle));
-      ThisThread::sleep_for(500ms);
-    }*/
     
     while (num != 5) {
             client.yield(100);
             ++num;
     }
     
-    //printf("%d, %d, %d\n", pDataXYZ[0], pDataXYZ[1], pDataXYZ[2]);
 
     while(1) {
         
@@ -211,31 +204,13 @@ void GestureUI (Arguments *in, Reply *out)   {
     bool success = true;
 
     // In this scenario, when using RPC delimit the two arguments with a space.
-    x = in->getArg<double>();
-    y = in->getArg<double>();
     mode = 0;
     // Have code here to call another RPC function to wake up specific led or close it.
     char buffer[200], outbuf[256];
     char strings[20];
     t.start(callback(&queue, &EventQueue::dispatch_forever));
     queue.call(Gestureselect);
-    //uLCD.printf("AAA");
-    /*sprintf(strings, "/myled%d/write %d", led, on);
-    strcpy(buffer, strings);
-    RPC::call(buffer, outbuf);
-    if (success) {
-        out->putData(buffer);
-    } else {
-        out->putData("Failed to execute LED control.");
-    }*/
 }
-
-
-
-
-
-
-
 
 
 
@@ -349,7 +324,7 @@ int Gestureselect() {
   }
 
   error_reporter->Report("Set up successful...\n");
-
+  myled1 = 1;
   while (true) {
     
     // Attempt to read new data from the accelerometer
@@ -381,6 +356,7 @@ int Gestureselect() {
       angle += 5;
       uLCD.color(BLUE);  
       uLCD.background_color(WHITE);
+      uLCD.cls();
       uLCD.textbackground_color(WHITE);
       // basic printf demo = 16 by 18 characters on screen
       uLCD.locate(1, 1);
@@ -390,19 +366,14 @@ int Gestureselect() {
       uLCD.printf("\n%d\n", angle);
     }
     if (mode == 1){
-      
-      //uLCD.printf("KKKK");
-      //break;
+      myled1 = 0;
       return 0;
     }
-    /*if (mypin == 1){
-      
-      //client.yield(100);
-    }*/
     if (gesture_index == 2){
       angle -= 5;
       uLCD.color(BLUE);  
       uLCD.background_color(WHITE);
+      uLCD.cls();
       uLCD.textbackground_color(WHITE);
       // basic printf demo = 16 by 18 characters on screen
       uLCD.locate(1, 1);
@@ -417,39 +388,47 @@ int Gestureselect() {
 
 void Tilt (Arguments *in, Reply *out)   {
     bool success = true;
-
-    // In this scenario, when using RPC delimit the two arguments with a space.
-    x = in->getArg<double>();
-    y = in->getArg<double>();
+    myled2 = 1;
     mode = 1;
     // Have code here to call another RPC function to wake up specific led or close it.
     char buffer[200], outbuf[256];
     char strings[20];
+    while (1) {
+      BSP_ACCELERO_AccGetXYZ(value);
+      if (value[2] > 980){
+        myled2 = 0;
+        break;
+      }
+    }
     t2.start(callback(&queue2, &EventQueue::dispatch_forever));
     queue2.call(Tiltjudge);
-    //uLCD.printf("AAA");
-    /*sprintf(strings, "/myled%d/write %d", led, on);
-    strcpy(buffer, strings);
-    RPC::call(buffer, outbuf);
-    if (success) {
-        out->putData(buffer);
-    } else {
-        out->putData("Failed to execute LED control.");
-    }*/
 }
 void Tiltjudge() {
+    myled3 = 1;
     t3.start(callback(&time_queue, &EventQueue::dispatch_forever));
     
 
     while (1){
-      
       BSP_ACCELERO_AccGetXYZ(value);
+      true_angle=acos(value[2]/1000.0)*180/PI;
+      uLCD.cls();
+      uLCD.color(BLUE);  
+      uLCD.background_color(WHITE);
+      uLCD.textbackground_color(WHITE);
+      // basic printf demo = 16 by 18 characters on screen
+      uLCD.locate(1, 1);
+      uLCD.text_width(4); //4X size text
+      uLCD.text_height(4);
+      uLCD.color(GREEN);
+      uLCD.printf("\n%.2lf\n", true_angle);
+
+      
       if(value[2]<cos(PI/180*angle)*1000 && mode == 1){
-        true_angle=acos(value[2]/1000.0)*180/PI;
         time_queue.call(&publish_message, client2);
       }
 
       if (mode == 0){
+        myled3 = 0;
         return;
       }
       ThisThread::sleep_for(500ms);
